@@ -19,6 +19,7 @@ use TomRichmond\GarminPersonalApi\Exceptions\AuthenticationException;
 use TomRichmond\GarminPersonalApi\Exceptions\GarminException;
 use TomRichmond\GarminPersonalApi\Exceptions\InvalidResponseException;
 use TomRichmond\GarminPersonalApi\GarminClient;
+use TomRichmond\GarminPersonalApi\Resources\Health;
 
 final class GarminClientTest extends TestCase
 {
@@ -193,6 +194,121 @@ final class GarminClientTest extends TestCase
             self::assertSame(404, $exception->statusCode);
             self::assertStringNotContainsString('private response', $exception->getMessage());
         }
+    }
+
+    public function testHealthMethodsUseDocumentedPathsAndQueries(): void
+    {
+        $cases = [
+            [static fn(Health $health): ?array => $health->dailyHeartRate('2026-10-25'), '/wellness-service/wellness/dailyHeartRate', ['date' => '2026-10-25']],
+            [static fn(Health $health): ?array => $health->heartRateZones(), '/biometric-service/heartRateZones/v2', []],
+            [static fn(Health $health): ?array => $health->dailyHrv('2026-10-25'), '/hrv-service/hrv/2026-10-25', []],
+            [static fn(Health $health): ?array => $health->dailyHrvSummaries('2026-10-01', '2026-10-25'), '/hrv-service/hrv/daily/2026-10-01/2026-10-25', []],
+            [static fn(Health $health): ?array => $health->dailySleep('2026-10-25'), '/sleep-service/sleep/dailySleep', ['date' => '2026-10-25']],
+            [static fn(Health $health): ?array => $health->dailySleepSummaries('2026-10-01', '2026-10-25'), '/sleep-service/sleep/dailySleepSummariesByDate', ['startDate' => '2026-10-01', 'endDate' => '2026-10-25']],
+            [static fn(Health $health): ?array => $health->dailyBodyBattery('2026-10-01', '2026-10-25', 2), '/wellness-service/wellness/bodyBattery/reports/daily', ['startDate' => '2026-10-01', 'endDate' => '2026-10-25', 'chunks' => '2']],
+            [static fn(Health $health): ?array => $health->dailyBodyBattery('2026-10-01', '2026-10-25'), '/wellness-service/wellness/bodyBattery/reports/daily', ['startDate' => '2026-10-01', 'endDate' => '2026-10-25']],
+            [static fn(Health $health): ?array => $health->dailySummaries('2026-10-01', '2026-10-25'), '/usersummary-service/v2/dailysummaries', ['startDate' => '2026-10-01', 'endDate' => '2026-10-25']],
+            [static fn(Health $health): ?array => $health->dailySteps('2026-10-01', '2026-10-25'), '/usersummary-service/stats/steps/daily/2026-10-01/2026-10-25', []],
+            [static fn(Health $health): ?array => $health->dailyStress('2026-10-01', '2026-10-25'), '/usersummary-service/stats/stress/daily/2026-10-01/2026-10-25', []],
+        ];
+
+        foreach ($cases as [$call, $expectedPath, $expectedQuery]) {
+            $now = 1_800_000_000;
+            $http = new QueueClient([
+                new Response(200, [], self::jwt($now + 3600)),
+                new Response(200, [], '{"futureMetric":{"value":123}}'),
+            ]);
+            $garmin = new GarminClient('synthetic-key', $http, clock: static fn(): int => $now);
+
+            self::assertSame(['futureMetric' => ['value' => 123]], $call($garmin->health()));
+            self::assertSame('GET', $http->requests[1]->getMethod());
+            self::assertSame($expectedPath, $http->requests[1]->getUri()->getPath());
+            self::assertSame('application/json', $http->requests[1]->getHeaderLine('Accept'));
+            self::assertSame('Bearer ' . self::jwt($now + 3600), $http->requests[1]->getHeaderLine('Authorization'));
+            parse_str($http->requests[1]->getUri()->getQuery(), $query);
+            self::assertSame($expectedQuery, $query);
+        }
+    }
+
+    public function testHealthAllowsArrayAndEmptyResponsesWithoutDroppingFields(): void
+    {
+        $now = 1_800_000_000;
+        $http = new QueueClient([
+            new Response(200, [], self::jwt($now + 3600)),
+            new Response(200, [], '[{"futureField":true}]'),
+            new Response(204, [], ''),
+            new Response(200, [], 'null'),
+        ]);
+        $garmin = new GarminClient('synthetic-key', $http, clock: static fn(): int => $now);
+
+        self::assertSame([['futureField' => true]], $garmin->health()->dailySteps('2026-10-25', '2026-10-25'));
+        self::assertNull($garmin->health()->dailySleep('2026-10-25'));
+        self::assertNull($garmin->health()->dailyHrv('2026-10-25'));
+        self::assertCount(4, $http->requests);
+    }
+
+    public function testHealthRejectsInvalidDatesBeforeMakingRequests(): void
+    {
+        $http = new QueueClient([]);
+        $health = new GarminClient('synthetic-key', $http)->health();
+
+        foreach ([
+            static fn() => $health->dailyHeartRate('2026-02-30'),
+            static fn() => $health->dailyHrv('../invalid'),
+            static fn() => $health->dailySleepSummaries('2026-10-26', '2026-10-25'),
+        ] as $call) {
+            try {
+                $call();
+                self::fail('Expected invalid date.');
+            } catch (InvalidArgumentException) {
+            }
+        }
+
+        self::assertSame([], $http->requests);
+    }
+
+    public function testHealthRejectsMalformedAndScalarJsonWithoutExposingBodies(): void
+    {
+        foreach (['{private', '"private"'] as $body) {
+            $http = new QueueClient([new Response(200, [], self::jwt(time() + 3600)), new Response(200, [], $body)]);
+            $garmin = new GarminClient('synthetic-key', $http);
+
+            try {
+                $garmin->health()->dailyHrv('2026-10-25');
+                self::fail('Expected invalid response.');
+            } catch (InvalidResponseException $exception) {
+                self::assertStringNotContainsString('private', $exception->getMessage());
+            }
+        }
+    }
+
+    public function testHealthHttpFailurePreservesStatusWithoutBody(): void
+    {
+        $http = new QueueClient([new Response(200, [], self::jwt(time() + 3600)), new Response(429, [], 'private response')]);
+        $garmin = new GarminClient('synthetic-key', $http);
+
+        try {
+            $garmin->health()->dailyBodyBattery('2026-10-25', '2026-10-25');
+            self::fail('Expected API error.');
+        } catch (ApiException $exception) {
+            self::assertSame(429, $exception->statusCode);
+            self::assertStringNotContainsString('private response', $exception->getMessage());
+        }
+    }
+
+    public function testHealthAndActivitiesShareOneAccessToken(): void
+    {
+        $now = 1_800_000_000;
+        $http = new QueueClient([
+            new Response(200, [], self::jwt($now + 3600)),
+            new Response(200, [], '[]'),
+            new Response(200, [], '{}'),
+        ]);
+        $garmin = new GarminClient('synthetic-key', $http, clock: static fn(): int => $now);
+
+        self::assertSame([], $garmin->activities()->list());
+        self::assertSame([], $garmin->health()->dailyHeartRate('2026-10-25'));
+        self::assertCount(3, $http->requests);
     }
 
     public function testAuthenticationFailureDoesNotExposeResponse(): void

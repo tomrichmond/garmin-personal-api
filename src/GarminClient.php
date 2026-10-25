@@ -12,10 +12,13 @@ use Symfony\Component\HttpClient\Psr18Client;
 use TomRichmond\GarminPersonalApi\Auth\TokenManager;
 use TomRichmond\GarminPersonalApi\Http\ApiClient;
 use TomRichmond\GarminPersonalApi\Resources\Activities;
+use TomRichmond\GarminPersonalApi\Resources\Health;
 
 final readonly class GarminClient
 {
     private Activities $activities;
+
+    private Health $health;
 
     /** @param callable(): int|null $clock */
     public function __construct(
@@ -29,11 +32,18 @@ final readonly class GarminClient
         $httpClient ??= new Psr18Client();
         $requestFactory ??= new Psr17Factory();
         $tokens = new TokenManager($apiKey, $baseUrl, $httpClient, $requestFactory, $cache, $clock);
-        $this->activities = new Activities(new ApiClient($baseUrl, $httpClient, $requestFactory, $tokens));
+        $apiClient = new ApiClient($baseUrl, $httpClient, $requestFactory, $tokens);
+        $this->activities = new Activities($apiClient);
+        $this->health = new Health($apiClient);
     }
 
     public function activities(): Activities
     {
         return $this->activities;
+    }
+
+    public function health(): Health
+    {
+        return $this->health;
     }
 }

@@ -69,6 +69,30 @@ final readonly class ApiClient
         return $data;
     }
 
+    /**
+     * @param array<string, int|string> $query
+     * @return array<array-key, mixed>|null
+     */
+    public function getJson(string $path, array $query = []): ?array
+    {
+        $body = (string) $this->getResponse($path, $query)->getBody();
+        if ($body === '') {
+            return null;
+        }
+
+        try {
+            $data = json_decode($body, true, 512, JSON_THROW_ON_ERROR);
+        } catch (JsonException $exception) {
+            throw new InvalidResponseException('Garmin returned invalid JSON.', 0, $exception);
+        }
+
+        if ($data !== null && ! is_array($data)) {
+            throw new InvalidResponseException('Garmin returned an unexpected JSON value.');
+        }
+
+        return $data;
+    }
+
     public function getBytes(string $path): string
     {
         $body = (string) $this->getResponse(

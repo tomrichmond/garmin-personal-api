@@ -1,6 +1,6 @@
 # Garmin Connect Personal API PHP SDK
 
-An early, framework-independent PHP 8.4+ client for the [official Garmin Connect Personal API](https://developer.garmin.com/gc-developer-program/personal/personal-api/). It supports API-key token exchange, paginated activity search, activity details, and activity-file downloads.
+An early, framework-independent PHP 8.4+ client for the [official Garmin Connect Personal API](https://developer.garmin.com/gc-developer-program/personal/personal-api/). It supports API-key token exchange, activities, and selected health endpoints.
 
 ## Install and use
 
@@ -32,11 +32,28 @@ Set `GARMIN_PERSONAL_API_KEY` in your shell first. The details example prints pr
 
 Activity lists and details are arrays of Garmin's raw JSON objects, preserving fields added by Garmin. Activity IDs must be positive integers. `downloadZip()` returns the original ZIP response as a binary string in memory; it neither extracts a FIT file nor writes to disk. The [official Python client](https://github.com/garmin/connect-personal-api-python) confirms that the Personal API's download endpoint returns ZIP bytes, despite the initial FIT-download assumption. Treat the bytes as private fitness data and choose a secure storage location if you save them.
 
+## Health data
+
+```php
+$heartRate = $garmin->health()->dailyHeartRate('2026-10-25');
+$heartRateZones = $garmin->health()->heartRateZones();
+$hrv = $garmin->health()->dailyHrv('2026-10-25');
+$hrvHistory = $garmin->health()->dailyHrvSummaries('2026-10-01', '2026-10-25');
+$sleep = $garmin->health()->dailySleep('2026-10-25');
+$sleepHistory = $garmin->health()->dailySleepSummaries('2026-10-01', '2026-10-25');
+$bodyBattery = $garmin->health()->dailyBodyBattery('2026-10-01', '2026-10-25');
+$dailyActivity = $garmin->health()->dailySummaries('2026-10-01', '2026-10-25');
+$steps = $garmin->health()->dailySteps('2026-10-01', '2026-10-25');
+$stress = $garmin->health()->dailyStress('2026-10-01', '2026-10-25');
+```
+
+Dates must be valid `YYYY-MM-DD` calendar dates, and the start must not follow the end. `dailyBodyBattery()` accepts an optional third `chunks` argument. These methods return Garmin's decoded JSON as an array, or `null` for an empty or JSON `null` response. They do not normalise fields, so newly added metrics remain accessible. The Personal API does not document a separate resting-heart-rate endpoint; inspect the raw heart-rate or daily-summary response for any such data Garmin supplies. The [Personal API Swagger](https://developer.garmin.com/gc-developer-program/personal/swagger-docs) also does not currently list a standalone training-readiness or recovery endpoint, so this SDK does not invent one or use the distinct Business Training API.
+
 The SDK uses Symfony's PSR-18 client and Nyholm's PSR-17 request factory by default. Supply a `Psr\Http\Client\ClientInterface`, a `Psr\Http\Message\RequestFactoryInterface`, and optionally a `Psr\SimpleCache\CacheInterface` through the constructor to integrate with your application. Without an external cache, the token is cached in memory for this client instance. An external cache stores bearer tokens as plaintext; secure its backend and use a private namespace.
 
 The API key is exchanged via `POST` with `Authorization: ApiKey <key>`; data requests use `Authorization: Bearer <token>`. Garmin does not issue refresh tokens. The SDK reacquires a token when its JWT `exp` is within 60 seconds. `AuthenticationException`, `ApiException` (with `statusCode`), and `InvalidResponseException` report failures without embedding response bodies or credentials. PSR-18 network failures are wrapped in an SDK exception with the original exception as its cause.
 
-The activity `start` parameter is an offset and `limit` is the requested page size. This package does not yet add an iterator or enforce a maximum page size. See [Garmin's Swagger documentation](https://developer.garmin.com/gc-developer-program/personal/swagger-docs) for current API behavior.
+The activity `start` parameter is an offset and `limit` is the requested page size. This package does not yet add an iterator or enforce a maximum page size. See [Garmin's Swagger documentation](https://developer.garmin.com/gc-developer-program/personal/swagger-docs) for current API behaviour.
 
 Run `composer test`, `composer analyse`, and `composer format:check` locally. Formatting follows PER Coding Style 3.x. Tests use synthetic tokens and HTTP doubles. No live credentials are required.
 
