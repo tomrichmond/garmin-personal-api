@@ -76,6 +76,52 @@ final class GarminClientTest extends TestCase
         self::assertSame('POST', $http->requests[3]->getMethod());
     }
 
+    public function testActivityIteratorIsLazyAndAdvancesByReturnedCount(): void
+    {
+        $now = 1_800_000_000;
+        $http = new QueueClient([
+            new Response(200, [], self::jwt($now + 3600)),
+            new Response(200, [], '[{"activityId":1},{"activityId":2}]'),
+            new Response(200, [], '[{"activityId":3}]'),
+            new Response(200, [], '[]'),
+        ]);
+        $garmin = new GarminClient('synthetic-key', $http, clock: static fn(): int => $now);
+        $activities = $garmin->activities()->iterate(startDate: '2026-10-01', limit: 5);
+
+        self::assertCount(0, $http->requests);
+        self::assertSame([['activityId' => 1], ['activityId' => 2], ['activityId' => 3]], iterator_to_array($activities));
+        self::assertCount(4, $http->requests);
+
+        foreach ([0, 2, 3] as $page => $start) {
+            parse_str($http->requests[$page + 1]->getUri()->getQuery(), $query);
+            self::assertSame((string) $start, $query['start']);
+            self::assertSame('5', $query['limit']);
+            self::assertSame('2026-10-01', $query['startDate']);
+        }
+    }
+
+    public function testActivityIteratorCanLimitPages(): void
+    {
+        $now = 1_800_000_000;
+        $http = new QueueClient([
+            new Response(200, [], self::jwt($now + 3600)),
+            new Response(200, [], '[{"activityId":1}]'),
+        ]);
+        $garmin = new GarminClient('synthetic-key', $http, clock: static fn(): int => $now);
+
+        self::assertSame([['activityId' => 1]], iterator_to_array($garmin->activities()->iterate(maxPages: 1)));
+        self::assertCount(2, $http->requests);
+    }
+
+    public function testActivityIteratorRejectsInvalidPageLimitBeforeRequest(): void
+    {
+        $http = new QueueClient([]);
+        $garmin = new GarminClient('synthetic-key', $http);
+
+        $this->expectException(InvalidArgumentException::class);
+        $garmin->activities()->iterate(maxPages: 0);
+    }
+
     public function testCacheKeyIsPortableAcrossPsr16Implementations(): void
     {
         $now = 1_800_000_000;
