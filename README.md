@@ -1,6 +1,6 @@
 # Garmin Connect Personal API PHP SDK
 
-An early, framework-independent PHP 8.4+ client for the [official Garmin Connect Personal API](https://developer.garmin.com/gc-developer-program/personal/personal-api/). This first slice supports API-key token exchange and paginated activity search.
+An early, framework-independent PHP 8.4+ client for the [official Garmin Connect Personal API](https://developer.garmin.com/gc-developer-program/personal/personal-api/). It supports API-key token exchange, paginated activity search, activity details, and activity-file downloads.
 
 ## Install and use
 
@@ -16,9 +16,23 @@ $activities = $garmin->activities()->list(
     start: 0,
     limit: 20,
 );
+
+$activity = $garmin->activities()->get(123456789);
+$zipBytes = $garmin->activities()->downloadZip(123456789);
 ```
 
-Results are arrays of Garmin's raw JSON objects, preserving fields added by Garmin. The SDK uses Symfony's PSR-18 client and Nyholm's PSR-17 request factory by default. Supply a `Psr\Http\Client\ClientInterface`, a `Psr\Http\Message\RequestFactoryInterface`, and optionally a `Psr\SimpleCache\CacheInterface` through the constructor to integrate with your application. Without an external cache, the token is cached in memory for this client instance. An external cache stores bearer tokens as plaintext; secure its backend and use a private namespace.
+For a CLI smoke test with your own key and activity ID, run:
+
+```sh
+php examples/get-activity.php 123456789
+php examples/download-activity.php 123456789 /path/to/private/activity.zip
+```
+
+Set `GARMIN_PERSONAL_API_KEY` in your shell first. The details example prints private activity data to stdout; the download example creates a ZIP at the explicit path and refuses to overwrite an existing file. Neither example is run by CI.
+
+Activity lists and details are arrays of Garmin's raw JSON objects, preserving fields added by Garmin. Activity IDs must be positive integers. `downloadZip()` returns the original ZIP response as a binary string in memory; it neither extracts a FIT file nor writes to disk. The [official Python client](https://github.com/garmin/connect-personal-api-python) confirms that the Personal API's download endpoint returns ZIP bytes, despite the initial FIT-download assumption. Treat the bytes as private fitness data and choose a secure storage location if you save them.
+
+The SDK uses Symfony's PSR-18 client and Nyholm's PSR-17 request factory by default. Supply a `Psr\Http\Client\ClientInterface`, a `Psr\Http\Message\RequestFactoryInterface`, and optionally a `Psr\SimpleCache\CacheInterface` through the constructor to integrate with your application. Without an external cache, the token is cached in memory for this client instance. An external cache stores bearer tokens as plaintext; secure its backend and use a private namespace.
 
 The API key is exchanged via `POST` with `Authorization: ApiKey <key>`; data requests use `Authorization: Bearer <token>`. Garmin does not issue refresh tokens. The SDK reacquires a token when its JWT `exp` is within 60 seconds. `AuthenticationException`, `ApiException` (with `statusCode`), and `InvalidResponseException` report failures without embedding response bodies or credentials. PSR-18 network failures are wrapped in an SDK exception with the original exception as its cause.
 

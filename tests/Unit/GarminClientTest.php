@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace TomRichmond\GarminPersonalApi\Tests\Unit;
 
+use InvalidArgumentException;
 use LogicException;
 use Nyholm\Psr7\Response;
 use PHPUnit\Framework\TestCase;
@@ -91,6 +92,107 @@ final class GarminClientTest extends TestCase
         $garmin = new GarminClient('synthetic-key', $http, cache: $cache, clock: static fn(): int => $now);
 
         self::assertSame([], $garmin->activities()->list());
+    }
+
+    public function testGetsActivityDetailsAndPreservesUnknownFields(): void
+    {
+        $now = 1_800_000_000;
+        $http = new QueueClient([
+            new Response(200, [], self::jwt($now + 3600)),
+            new Response(200, [], '{"activityId":123,"futureField":{"nested":[1,2]}}'),
+        ]);
+        $garmin = new GarminClient('synthetic-key', $http, clock: static fn(): int => $now);
+
+        self::assertSame(
+            ['activityId' => 123, 'futureField' => ['nested' => [1, 2]]],
+            $garmin->activities()->get(123),
+        );
+        self::assertSame('GET', $http->requests[1]->getMethod());
+        self::assertSame('/activity-service/activity/123', $http->requests[1]->getUri()->getPath());
+        self::assertSame('application/json', $http->requests[1]->getHeaderLine('Accept'));
+        self::assertSame('Bearer ' . self::jwt($now + 3600), $http->requests[1]->getHeaderLine('Authorization'));
+    }
+
+    public function testDownloadsUnmodifiedActivityZipBytes(): void
+    {
+        $now = 1_800_000_000;
+        $bytes = "PK\x03\x04\x00\xff\x00";
+        $http = new QueueClient([
+            new Response(200, [], self::jwt($now + 3600)),
+            new Response(200, ['Content-Type' => 'application/zip'], $bytes),
+        ]);
+        $garmin = new GarminClient('synthetic-key', $http, clock: static fn(): int => $now);
+
+        self::assertSame($bytes, $garmin->activities()->downloadZip(123));
+        self::assertSame('GET', $http->requests[1]->getMethod());
+        self::assertSame('/download-service/files/activity/123', $http->requests[1]->getUri()->getPath());
+        self::assertSame(
+            'application/zip, application/x-zip-compressed, application/octet-stream',
+            $http->requests[1]->getHeaderLine('Accept'),
+        );
+        self::assertSame('Bearer ' . self::jwt($now + 3600), $http->requests[1]->getHeaderLine('Authorization'));
+    }
+
+    public function testRejectsNonPositiveActivityIdsBeforeMakingRequests(): void
+    {
+        $http = new QueueClient([]);
+        $garmin = new GarminClient('synthetic-key', $http);
+
+        foreach ([static fn() => $garmin->activities()->get(0), static fn() => $garmin->activities()->downloadZip(-1)] as $call) {
+            try {
+                $call();
+                self::fail('Expected invalid activity ID.');
+            } catch (InvalidArgumentException $exception) {
+                self::assertSame('Activity ID must be a positive integer.', $exception->getMessage());
+            }
+        }
+
+        self::assertSame([], $http->requests);
+    }
+
+    public function testRejectsNonObjectActivityDetail(): void
+    {
+        $http = new QueueClient([new Response(200, [], self::jwt(time() + 3600)), new Response(200, [], '[]')]);
+        $garmin = new GarminClient('synthetic-key', $http);
+
+        $this->expectException(InvalidResponseException::class);
+        $garmin->activities()->get(123);
+    }
+
+    public function testRejectsMalformedActivityDetailJsonWithoutExposingBody(): void
+    {
+        $http = new QueueClient([new Response(200, [], self::jwt(time() + 3600)), new Response(200, [], '{private')]);
+        $garmin = new GarminClient('synthetic-key', $http);
+
+        try {
+            $garmin->activities()->get(123);
+            self::fail('Expected malformed JSON error.');
+        } catch (InvalidResponseException $exception) {
+            self::assertStringNotContainsString('private', $exception->getMessage());
+        }
+    }
+
+    public function testRejectsEmptyActivityDownload(): void
+    {
+        $http = new QueueClient([new Response(200, [], self::jwt(time() + 3600)), new Response(200, [], '')]);
+        $garmin = new GarminClient('synthetic-key', $http);
+
+        $this->expectException(InvalidResponseException::class);
+        $garmin->activities()->downloadZip(123);
+    }
+
+    public function testActivityDownloadHttpErrorDoesNotExposeBody(): void
+    {
+        $http = new QueueClient([new Response(200, [], self::jwt(time() + 3600)), new Response(404, [], 'private response')]);
+        $garmin = new GarminClient('synthetic-key', $http);
+
+        try {
+            $garmin->activities()->downloadZip(123);
+            self::fail('Expected API error.');
+        } catch (ApiException $exception) {
+            self::assertSame(404, $exception->statusCode);
+            self::assertStringNotContainsString('private response', $exception->getMessage());
+        }
     }
 
     public function testAuthenticationFailureDoesNotExposeResponse(): void

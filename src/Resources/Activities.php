@@ -38,4 +38,27 @@ final readonly class Activities
 
         return $this->apiClient->getList('/activitylist-service/activities/search/activities', $query);
     }
+
+    /** @return array<string, mixed> */
+    public function get(int $activityId): array
+    {
+        self::assertValidId($activityId);
+
+        return $this->apiClient->getObject('/activity-service/activity/' . $activityId);
+    }
+
+    /** Return the unextracted ZIP archive containing the activity file. */
+    public function downloadZip(int $activityId): string
+    {
+        self::assertValidId($activityId);
+
+        return $this->apiClient->getBytes('/download-service/files/activity/' . $activityId);
+    }
+
+    private static function assertValidId(int $activityId): void
+    {
+        if ($activityId <= 0) {
+            throw new InvalidArgumentException('Activity ID must be a positive integer.');
+        }
+    }
 }
